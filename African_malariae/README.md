@@ -1,0 +1,525 @@
+Characterization of African *P. malariae* clusters
+================
+Margaux Lefebvre
+2026-02-12
+
+# PCA and ancestry plots
+
+## ANGSD input and LD-pruning
+
+Version: angsd v0.940, python v3.8.12, R v4.5.2, ngsLD v1.2.0.
+
+``` bash
+listbam=list_bams_Africa.txt #all samples without outgroup
+REF=GCF_900090045.1_PmUG01_genomic.fna
+CORE=core_malariae.txt
+
+# Create Beagle input for the pruning
+angsd -b $listbam -ref $REF -out PCA_coregenome.Africa.Africa \
+        -rf $CORE -uniqueOnly 1 \
+        -minMapQ 20 -minQ 20 -doCounts 1 \
+        -GL 2 -doGlf 2 -nThreads 8 -doMajorMinor 1 -SNP_pval 1e-6 -doMaf 1 -minMaf 0.01
+
+# Prepare a pos file with the mafs filre
+zcat PCA_coregenome.Africa.Africa.mafs.gz | cut -f 1,2 |  sed 's/:/_/g'| gzip > PCA_coregenome.Africa.pos.gz
+
+# Run ngsLD
+ngsLD \
+--geno PCA_coregenome.Africa.beagle.gz \
+--posH PCA_coregenome.Africa.pos.gz \
+--probs \
+--n_ind 160 \
+--n_sites 260409 \
+--max_kb_dist 1 \
+--n_threads 8 \
+--out PCA_coregenome.Africa.ld
+
+# Run prune_graph
+prune_graph --header \
+--in PCA_coregenome.Africa.ld --weight-field "r2" \
+--weight-filter "dist <= 5000 && r2 >= 0.5" \
+--out PCA_coregenome.Africa.snp.unlinked.id
+```
+
+Generate an LD-pruned SNP list:
+
+``` r
+pruned_position <- as.integer(gsub(paste0("NC_0417[0-9][0-9].1:"), "", readLines(paste0("./Data/PCA_coregenome.Africa.snp.unlinked.id"))))
+snp_list <- read.table(paste0("./Data/PCA_coregenome.Africa.mafs.gz"), stringsAsFactors = F, header = T)[,1:4]
+pruned_snp_list <- snp_list[snp_list$position %in% pruned_position, ]
+write.table(pruned_snp_list, paste0("./Data/PCA_coregenome.Africa.snp.LDpruned.list"), col.names = F, row.names = F, quote = F, sep = "\t")
+```
+
+Create the input for PCAngsd
+
+``` bash
+listbam=list_bams_Africa.txt #all samples without outgroup
+REF=GCF_900090045.1_PmUG01_genomic.fna
+CORE=core_malariae.txt
+
+# Create input
+angsd sites index PCA_coregenome.Africa.snp.LDpruned.list # mandatory
+
+# Create Beagle input for the pruning
+angsd -b $listbam -ref $REF -out PCA_coregenome.Africa_final \
+        -rf $CORE -uniqueOnly 1 \
+        -minMapQ 20 -minQ 20 -doCounts 1 \
+        -GL 2 -doGlf 2 -nThreads 8 -doMajorMinor 1 -doMAF 1 -SNP_pval 1e-6 \
+        -doPost 1 -doIBS 1 -doCov 1 -makeMatrix 1 -sites PCA_coregenome.Africa.snp.LDpruned.list
+```
+
+## PCA
+
+Version: PCAngsd v1.36.1.
+
+``` bash
+pcangsd -b PCA_coregenome.Africa_final.beagle.gz -o PCA.Africa_final.mat --iter 500 -t 8 --maf 0.01
+```
+
+## Ancestry plots
+
+Version: PCAngsd v1.36.1.
+
+``` bash
+# Run PCAngsd for ancestry plots
+pcangsd -b PCA_coregenome.Africa_final.beagle.gz --admix --admix-K 2 -o Africa.ancestry --iter 500 -t 8 --maf 0.01
+```
+
+Plot on the map
+
+``` r
+library(tidyverse)
+Samples_data<-read_delim("metadata_final.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+
+indiv_order<-read_delim("./Data/list_samples_Africa.txt", 
+    delim = "\t", escape_double = FALSE, 
+    col_names = "sample_ID", trim_ws = TRUE)
+
+info<-inner_join(indiv_order,Samples_data, join_by(sample_ID == Name))
+
+Qmat <- read_table("./Data/Africa.ancestry.admix.2.Q", 
+    col_names = c("Q1","Q2"))
+total_map<-cbind(info, Qmat)
+total_map[,c(26:27)]<-total_map[,c(26:27)]*100
+total_map$Longitude<-as.numeric(total_map$Longitude)
+mean_ancestry<-total_map %>% 
+  group_by(Country) %>%
+  summarise(Q1 = mean(Q1),
+            Q2 = mean(Q2), Lattitude=country_Lat, Longitude=country_Long)
+mean_ancestry<-unique(mean_ancestry)
+
+# Libraries
+library(ggplot2)
+library(dplyr)
+library(scatterpie)
+library(ggnewscale)
+library(ggrepel)
+ 
+# Get the world polygon and extract UK
+library(maps)
+world <- map_data("world")
+
+mapplot1<-ggplot() +
+  geom_polygon(data = world, aes(x=long, y = lat, group = group), fill="white",col="grey") +
+  theme_void() + coord_map() +coord_cartesian(xlim = c(-20,50), ylim = c(-35,35))
+
+mapplot2<-mapplot1  +
+geom_scatterpie(data=mean_ancestry, aes(x=Longitude, y=Lattitude, r= 1.2),cols = colnames(mean_ancestry[,c(2:3)]), alpha=01, color=NA) +scale_fill_manual(values = c('#e6194b', '#ffe119'))
+
+mapplot2+ theme_bw()+ theme(legend.position = "none")+labs(title = paste0("Ancestry K=2 in Africa"))+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+# Genome-scans
+
+For the genome scans, I kept the African samples with more than 70%
+ancestry in one African cluster and Thai samples as outgroup population.
+
+## Create the VCF file
+
+Version: bcftools v1.16.
+
+``` bash
+# First create a VCF with all sites
+bcftools mpileup -f GCF_900090045.1_PmUG01_genomic.fna -b list_bams_clusters.txt -R core_malariae.bcf.txt -q 20 -Q 20 | bcftools call -m -Oz -f GQ -o clusters_samples.allsites.vcf.gz
+tabix clusters_samples.allsites.vcf.gz
+
+bcftools view -M2 -i 'DP>10 & F_MISSING<1' clusters_samples.allsites.vcf.gz -Oz -o clusters_samples.filtered.vcf.gz
+tabix clusters_samples.filtered.vcf.gz
+```
+
+## Nucleotide diversity and Tajima’s D
+
+Version: pixy v2.0.0.beta14, R v4.5.2.
+
+Calculate pi and Tajima’s D with pixy with non-overlapping 500pb
+windows.
+
+``` bash
+pixy --stats pi tajima_d \
+--vcf clusters_samples.filtered.vcf.gz \
+--populations clusters_popfile.txt \
+--window_size 500 \
+--n_cores 16
+```
+
+Check if pi or Tajima’s D are significantly different (the script is
+only for pi but it’s the same for Tajima’s D).
+
+``` r
+library(readr)
+library(qqplotr)
+library(MASS)
+library(rstatix)
+
+pixy_pi <- read_delim("./Data/pixy_pi.txt", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+
+pixy_pi <- na.omit(pixy_pi)
+pixy_pi<-subset(pixy_pi, no_sites>=100) # Remove windows with less than 100 pb
+pixy_pi<-subset(pixy_pi, pop!="Thai") # Remove the Thai population because not of interest for this analysis
+
+# Check if distribution are normal with QQ plot
+pixy_pi %>%
+  ggplot(aes(sample = avg_pi)) +
+     stat_qq_band() +
+ stat_qq_line() +
+ stat_qq_point()+ labs(x = "Theoretical Quantiles", y = "Sample Quantiles")+ ggtitle("QQ plot for \u03c0 values")+
+  facet_wrap(~pop, scales = "free_y")+theme_bw()
+
+# Test if significantly different with Wilcox test
+test<-pixy_pi %>% 
+  wilcox_test(avg_pi ~ pop, p.adjust.method = "none") # no adjustment because we have only one comparison
+# Check the mean of each cluster
+pixy_pi %>%
+  group_by(pop)%>%
+  summarise(mean = mean(avg_pi))
+```
+
+## *F<sub>ST</sub>* and *D<sub>XY</sub>*
+
+Version: pixy v2.0.0.beta14, R v4.5.2, bedtools v2.31.1.
+
+Calculate *F<sub>ST</sub>* and *D<sub>XY</sub>* with pixy with sliding
+windows of 5kb and 500pb steps.
+
+``` bash
+pixy --stats fst dxy \
+--vcf clusters_samples.filtered.vcf.gz \
+--populations clusters_popfile.txt \
+--bed_file slid.500stp.5kbwin.bed \
+--n_cores 16
+# the bed file corresponds to coordinates for sliding windows of 5kb and 500pb steps
+```
+
+The genome-scans for seeking differentiation islands.
+
+``` r
+library(tidyverse)
+library(readr)
+library(dplyr)
+
+# Load FST data
+pixy_fst <- read_delim("./Data/win_slid/pixy_fst.txt", delim="\t", trim_ws=TRUE) %>%
+  na.omit() %>%
+  filter(pop1!="Thai", pop2!="Thai", no_snps>=100)
+
+pixy_fst$avg_wc_fst[pixy_fst$avg_wc_fst < 0] <- 0
+pixy_fst$chromosome <- as.factor(pixy_fst$chromosome)
+pixy_fst$midpos <- (pixy_fst$window_pos_1 + pixy_fst$window_pos_2)/2
+
+# Load DXY data
+pixy_dxy <- read_delim("./Data/win_slid/pixy_dxy.txt", delim="\t", trim_ws=TRUE) %>%
+  na.omit() %>%
+  filter(pop1!="Thai", pop2!="Thai", no_sites>=1000)
+
+pixy_dxy$chromosome <- as.factor(pixy_dxy$chromosome)
+pixy_dxy$midpos <- (pixy_dxy$window_pos_1 + pixy_dxy$window_pos_2)/2
+
+# Deal with edge effect
+trim_chromosome <- function(df) {
+  df %>%
+    group_by(chromosome) %>%
+    group_modify(~ {
+      d <- .x
+
+      # Calculate mean and sd per chromosome
+      sd_val <- sd(d$avg_dxy, na.rm = TRUE)
+      mean_val <- mean(d$avg_dxy, na.rm = TRUE)
+      threshold <- mean_val + sd_val 
+      
+      # Trimming in starting windows
+      start_idx <- 1
+      while (start_idx <= nrow(d) && d$avg_dxy[start_idx] > threshold) {
+        start_idx <- start_idx + 1
+      }
+      
+      #Trimming in ending windows
+      end_idx <- nrow(d)
+      while (end_idx >= start_idx && d$avg_dxy[end_idx] > threshold) {
+        end_idx <- end_idx - 1
+      }
+      
+      # Return trimmed dataset
+      if (start_idx > end_idx) {
+        # No valid windows left → return empty tibble
+        return(d[0,])
+      } else {
+        return(d[start_idx:end_idx, ])
+      }
+    }) %>%
+    ungroup()
+}
+
+pixy_dxy <- trim_chromosome(pixy_dxy)
+
+# Scaling for secondary axis
+b <- diff(range(pixy_fst$avg_wc_fst)) / diff(range(pixy_dxy$avg_dxy))
+a <- min(pixy_fst$avg_wc_fst) - b * min(pixy_dxy$avg_dxy)
+
+pixy_dxy$scaled_dxy <- a + b * pixy_dxy$avg_dxy
+
+# Combine FST and DXY
+combined <- bind_rows(
+  pixy_fst %>% select(chromosome, midpos, value = avg_wc_fst) %>% mutate(type="FST"),
+  pixy_dxy %>% select(chromosome, midpos, value = scaled_dxy) %>% mutate(type="DXY")
+)
+
+# For plot purpose, I transform the position so it starts at 0 and get the chromosome lengths to have different size of plots
+combined <- combined %>%
+  group_by(chromosome) %>%
+  mutate(midpos0 = midpos - min(midpos)) %>%
+  ungroup()
+
+chr_lengths <- combined %>%
+  group_by(chromosome) %>%
+  summarise(chr_len = max(midpos0, na.rm=TRUE))
+
+max_len <- max(chr_lengths$chr_len)
+
+# Plot (one chromosome per row)
+p <- ggplot(combined, aes(x = midpos0, y = value, color = type)) +
+  geom_line(alpha = 0.5) +
+  facet_grid(
+    rows = vars(chromosome),
+    scales = "fixed",
+    switch = "y"
+  ) +
+  scale_x_continuous(limits = c(0, max_len)) +
+  scale_y_continuous(
+    "FST",
+    sec.axis = sec_axis(~ (. - a)/b, name = "DXY")
+  ) +
+  labs(x = "Position along chromosome (normalized)") +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    strip.text.y.right = element_blank(),
+    strip.background = element_blank()
+  )
+print(p)
+
+# Search islands of differentiation (within the upper 2.5% of the distributions for both FST and DXY)
+FST_only<-subset(combined, type=="FST")
+high_FST<-subset(FST_only,  value>quantile(FST_only$value, 0.975))
+high_FST<-high_FST[,-4]
+colnames(high_FST)<-c("chromosome", "midpos", "FST", "midpos0")
+
+DXY_only<-subset(combined, type=="DXY")
+high_DXY<-subset(DXY_only,  value>quantile(DXY_only$value, 0.975))
+high_DXY<-high_DXY[,-4]
+colnames(high_DXY)<-c("chromosome", "midpos", "DXY", "midpos0")
+
+all_high<-inner_join(high_FST, high_DXY)
+all_high$start_window<-all_high$midpos-2500
+all_high$end_window<-all_high$midpos+2500
+
+# Only one region in chromosome 5 corresponded, so let's plot it
+chr_5<-subset(combined, chromosome=="NC_041779.1")
+
+p <- ggplot(chr_5, aes(x = midpos, y = value, color = type)) + 
+  geom_rect(aes(xmin=1177501, xmax=1194001, ymin=0, ymax=0.1), fill="lightgrey", alpha=0.1, inherit.aes = FALSE)+
+  geom_line(alpha = 0.5) +
+  scale_y_continuous(
+    "FST",
+    sec.axis = sec_axis(~ (. - a)/b, name = "DXY")
+  ) +
+  labs(x = "Position along the chromosome") +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    strip.text.y.right = element_blank(),
+    strip.background = element_blank()
+  )
+p
+```
+
+Does the window with significant differenciation signals fall into gene
+coding sequences (CDS)?
+
+``` bash
+bedtools intersect -wb -a GCF_900090045.1_PmUG01_genomic.gff -b differenciation_region.tsv > gene_diff_ID.txt
+```
+
+## PBS
+
+Version: pixy v2.0.0.beta14, R v4.5.2, bedtools v2.31.1.
+
+Calculate *F<sub>ST</sub>* with pixy with sliding windows of 5kb and
+500pb steps.
+
+``` bash
+pixy --stats fst \
+--vcf clusters_samples.filtered.vcf.gz \
+--populations clusters_popfile.txt \
+--bed_file slid.500stp.5kbwin.bed \
+--n_cores 16
+# the bed file corresponds to coordinates for sliding windows of 5kb and 500pb steps
+```
+
+Get *F<sub>ST</sub>* values and calculate PBS.
+
+``` r
+library(tidyverse)
+library(readr)
+
+# Load FST values
+pixy_fst <- read_delim("./Data/win_slid/pixy_fst.txt", delim="\t", trim_ws=TRUE) %>%
+  na.omit() %>%
+  filter(no_snps>=100)
+
+pixy_fst$avg_wc_fst[pixy_fst$avg_wc_fst < 0] <- 0
+pixy_fst$chromosome <- as.factor(pixy_fst$chromosome)
+
+# Calculate PBS (T = -log(1 - fst))
+pixy_fst <- pixy_fst %>%
+  mutate(T = -log(1 - avg_wc_fst))
+
+# Reshape the data so each window has 3 T values:
+fst_wide <- pixy_fst %>%
+  mutate(comparison = paste(pop1, pop2, sep = "_")) %>%
+  select(chromosome, window_pos_1, window_pos_2, comparison, T) %>%
+  pivot_wider(names_from = comparison, values_from = T)
+fst_wide$midpos <- (fst_wide$window_pos_1 + fst_wide$window_pos_2)/2
+
+# Now compute PBS for cluster Y and PBS for cluster R
+fst_wide <- fst_wide %>%
+  mutate(
+    PBScY = (ClusterY_ClusterR + ClusterY_Thai - ClusterR_Thai) / 2,
+    PBScR = (ClusterY_ClusterR + ClusterR_Thai - ClusterY_Thai) / 2
+  )
+fst_wide$PBScY[fst_wide$PBScY < 0] <- 0
+fst_wide$PBScR[fst_wide$PBScR < 0] <- 0
+
+# Preparation of the data for the manahattan plots
+fst_wide$CHROM<-fst_wide$chromosome
+fst_wide$chromosome<-as.numeric(as.factor(fst_wide$chromosome))
+  data_cum <-  fst_wide %>% 
+    group_by(chromosome) %>% 
+    summarise(max_bp = max(midpos)) %>% 
+    mutate(bp_add = lag(cumsum(max_bp), default = 0)) %>% 
+    select(chromosome, bp_add)
+   fst_wide <-  fst_wide %>% 
+    inner_join(data_cum, by = "chromosome") %>% 
+    mutate(bp_cum = midpos + bp_add)
+  
+  axis_set <-  fst_wide %>% 
+    group_by(chromosome) %>% 
+    summarize(center = max(bp_cum))
+
+# Manhattan plot of Cluster Y
+highlight<-subset(fst_wide,  PBScY>quantile(fst_wide$PBScY, 0.99))
+write_tsv(as.data.frame(cbind(as.character(highlight$CHROM), highlight$window_pos_1, highlight$window_pos_2)), file = "./Data/PBScY_genes_signiff.tsv", col_names = F)
+
+  p1<-fst_wide %>%
+  sample_frac(0.5, replace = FALSE)  %>%
+  ggplot(aes(x = bp_cum, y =PBScY,color = as_factor(chromosome))) +
+    geom_point(alpha = 0.75) +
+    scale_x_continuous(label = axis_set$chromosome, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("#87CEEB", "#0047AB"), unique(length(axis_set$chromosome))))+
+    labs(x = "Chromosome", y = "PBS") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  p1
+p2<-p1+geom_point(data=highlight, aes(x = bp_cum, y =PBScY), color = "#bc4653", alpha= 0.8)
+p2
+
+p1<-fst_wide %>%
+  sample_frac(1, replace = FALSE)  %>%
+  ggplot(aes(x = bp_cum, y =PBScY,color = as_factor(chromosome))) +
+    geom_point(alpha = 0.75) +
+    scale_x_continuous(label = axis_set$chromosome, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("#87CEEB", "#0047AB"), unique(length(axis_set$chromosome))))+
+    labs(x = "Chromosome", y = "PBS") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  p1
+p2<-p1+geom_point(data=highlight, aes(x = bp_cum, y =PBScY), color = "#bc4653", alpha= 0.8)
+p2
+
+# Manhattan plot of Cluster R
+highlight<-subset(fst_wide,  PBScR>quantile(fst_wide$PBScR, 0.99))
+write_tsv(as.data.frame(cbind(as.character(highlight$CHROM), highlight$window_pos_1, highlight$window_pos_2)), file = "./Data/PBScR_genes_signiff.tsv", col_names = F)
+
+
+  p1<-fst_wide %>%
+  sample_frac(0.5, replace = FALSE)  %>%
+  ggplot(aes(x = bp_cum, y =PBScR,color = as_factor(chromosome))) +
+    geom_point(alpha = 0.75) +
+    scale_x_continuous(label = axis_set$chromosome, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("#87CEEB", "#0047AB"), unique(length(axis_set$chromosome))))+
+    labs(x = "Chromosome", y = "PBS") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  p1
+p2<-p1+geom_point(data=highlight, aes(x = bp_cum, y =PBScR), color = "#bc4653", alpha= 0.8)
+p2
+
+p1<-fst_wide %>%
+  sample_frac(1, replace = FALSE)  %>%
+  ggplot(aes(x = bp_cum, y =PBScR,color = as_factor(chromosome))) +
+    geom_point(alpha = 0.75) +
+    scale_x_continuous(label = axis_set$chromosome, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("#87CEEB", "#0047AB"), unique(length(axis_set$chromosome))))+
+    labs(x = "Chromosome", y = "PBS") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  p1
+p2<-p1+geom_point(data=highlight, aes(x = bp_cum, y =PBScR), color = "#bc4653", alpha= 0.8)
+p2
+```
+
+Do windows with significant selection signals fall into gene coding
+sequences (CDS)?
+
+``` bash
+bedtools intersect -wb -a GCF_900090045.1_PmUG01_genomic.gff \
+-b PBScY_genes_signiff.tsv PBScR_genes_signiff.tsv \
+-names PBScY PBScR > gene_ID.txt
+```
