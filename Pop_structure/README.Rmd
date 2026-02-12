@@ -1,0 +1,111 @@
+---
+title: "Worldwide population structure"
+author: "Margaux Lefebvre"
+date: "`r Sys.Date()`"
+output:
+  github_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,eval = FALSE) #prevent all chunks from running
+library(tidyverse)
+```
+
+# Global PCA and ancestry plots
+
+## ANGSD input and LD-pruning
+
+Version: angsd v0.940, python v3.8.12, R v4.5.2, ngsLD v1.2.0.
+```{bash}
+listbam=all_filtered.noout.bamspaths #all samples without outgroup
+REF=GCF_900090045.1_PmUG01_genomic.fna
+CORE=core_malariae.txt
+
+# Create Beagle input for the pruning
+angsd -b $listbam -ref $REF -out PCA_coregenome \
+        -rf $CORE -uniqueOnly 1 \
+        -minMapQ 20 -minQ 20 -doCounts 1 \
+        -GL 2 -doGlf 2 -nThreads 8 -doMajorMinor 1 -SNP_pval 1e-6 -doMaf 1 -minMaf 0.01
+
+# Prepare a pos file with the mafs filre
+zcat PCA_coregenome.mafs.gz | cut -f 1,2 |  sed 's/:/_/g'| gzip > PCA_coregenome.pos.gz
+
+# Run ngsLD
+ngsLD \
+--geno PCA_coregenome.beagle.gz \
+--posH PCA_coregenome.pos.gz \
+--probs \
+--n_ind 179 \
+--n_sites 272444 \
+--max_kb_dist 1 \
+--n_threads 8 \
+--out PCA_coregenome.ld
+
+# Run prune_graph
+prune_graph --header \
+--in PCA_coregenome.ld --weight-field "r2" \
+--weight-filter "dist <= 5000 && r2 >= 0.5" \
+--out PCA_coregenome.snp.unlinked.id
+```
+
+Generate an LD-pruned SNP list:
+
+```{r}
+pruned_position <- as.integer(gsub(paste0("NC_0417[0-9][0-9].1:"), "", readLines(paste0("./Data/PCA_coregenome.snp.unlinked.id"))))
+snp_list <- read.table(paste0("./Data/PCA_coregenome.mafs.gz"), stringsAsFactors = F, header = T)[,1:4]
+pruned_snp_list <- snp_list[snp_list$position %in% pruned_position, ]
+write.table(pruned_snp_list, paste0("./Data/PCA_coregenome.snp.LDpruned.list"), col.names = F, row.names = F, quote = F, sep = "\t")
+```
+
+Create the input for PCAngsd
+```{bash}
+listbam=all_filtered.noout.bamspaths #all samples without outgroup
+REF=GCF_900090045.1_PmUG01_genomic.fna
+CORE=core_malariae.txt
+
+# Create input
+angsd sites index PCA_coregenome.snp.LDpruned.list # mandatory
+
+# Create Beagle input for the pruning
+angsd -b $listbam -ref $REF -out PCA_coregenome_total \
+        -rf $CORE -uniqueOnly 1 \
+        -minMapQ 20 -minQ 20 -doCounts 1 \
+        -GL 2 -doGlf 2 -nThreads 8 -doMajorMinor 1 -doMAF 1 -SNP_pval 1e-6 \
+        -doPost 1 -doIBS 1 -doCov 1 -makeMatrix 1 -sites PCA_coregenome.snp.LDpruned.list
+
+# Calculate the PCA with PCAngsd
+pcangsd -b PCA_coregenome_total.beagle.gz -o PCA_coregenome.05.mat --iter 500 -t 8 --maf 0.01
+```
+
+## PCA
+
+Version: PCAngsd v1.36.1.
+```{bash}
+pcangsd -b PCA_coregenome_total.beagle.gz -o PCA_coregenome.05.mat --iter 500 -t 8 --maf 0.01
+```
+
+## Ancestry plots
+
+Version: PCAngsd v1.36.1.
+
+According to Meisner and Albrechtsen, the best K is determined by 1+ D (the optimal number of principal components). So D would be equal to 5 (determined by the elbow (broken-stick) method), so K=6.
+```{bash}
+# Run PCAngsd for ancestry plots
+for k in {2..10}
+do
+ pcangsd -b PCA_coregenome_total.beagle.gz --admix --admix-K $k -o ancestry --iter 500 -t 8 --maf 0.01
+done
+
+# Run pong for vizualisation
+pong -m filemap_tabs.txt -i ind2pop.txt -n pop_order.txt
+```
+
+# Maximum likelihood tree
+
+Version: python v3.12, iqtree v2.3.4.
+```{bash}
+## Create the input
+python vcf2phylip.py -i malariae_brasi.filt.core.ploidy2.vcf.gz -o GA02 --output-prefix tree_allsamples # change vcf to phylip file
+## ML tree
+iqtree -s tree_all.varsites.phy -m MFP+ASC -T 24 --prefix tree_all -o GA02 -B 1000 -alrt 1000 -st DNA #MFP+ASC = model finder for dataset with only variable sites
+```
