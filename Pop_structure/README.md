@@ -66,9 +66,6 @@ angsd -b $listbam -ref $REF -out PCA_coregenome_total \
         -minMapQ 20 -minQ 20 -doCounts 1 \
         -GL 2 -doGlf 2 -nThreads 8 -doMajorMinor 1 -doMAF 1 -SNP_pval 1e-6 \
         -doPost 1 -doIBS 1 -doCov 1 -makeMatrix 1 -sites PCA_coregenome.snp.LDpruned.list
-
-# Calculate the PCA with PCAngsd
-pcangsd -b PCA_coregenome_total.beagle.gz -o PCA_coregenome.05.mat --iter 500 -t 8 --maf 0.01
 ```
 
 ## PCA
