@@ -1,7 +1,7 @@
 Characterization of African *P. malariae* clusters
 ================
 Margaux Lefebvre
-2026-02-12
+2026-03-04
 
 # PCA and ancestry plots
 
@@ -192,10 +192,12 @@ pixy_pi %>%
 # Test if significantly different with Wilcox test
 test<-pixy_pi %>% 
   wilcox_test(avg_pi ~ pop, p.adjust.method = "none") # no adjustment because we have only one comparison
-# Check the mean of each cluster
+# Check the median of each cluster
 pixy_pi %>%
   group_by(pop)%>%
-  summarise(mean = mean(avg_pi))
+  summarise(median = median(avg_pi))
+# Check the effect size
+wilcox_effsize(pixy_pi, avg_pi ~ pop, ci = T)
 ```
 
 ## *F<sub>ST</sub>* and *D<sub>XY</sub>*
