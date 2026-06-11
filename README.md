@@ -1,8 +1,8 @@
 # WGS_Pmalariae
 
-This repository is for this paper :
-
-TBA
+This repository is for this paper : **Identification of two genomic cryptotypes of *Plasmodium malariae* in Africa**, Margaux J. M. Lefebvre, Céline Arnathau, Sandrine Houzé, Benoit de Thoisy, Camila González, Silvia Rondón, Andrés Link, Arnab Pain, Michael C. Fontaine, Franck Prugnolle, 
+Virginie Rougeron.
+doi: https://doi.org/10.64898/2026.03.23.713578 
 
 The languages used are mainly bash and R. For each part, software and version are specified.
 
