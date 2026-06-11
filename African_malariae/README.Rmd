@@ -134,6 +134,54 @@ geom_scatterpie(data=mean_ancestry, aes(x=Longitude, y=Lattitude, r= 1.2),cols =
 mapplot2+ theme_bw()+ theme(legend.position = "none")+labs(title = paste0("Ancestry K=2 in Africa"))+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ```
 
+## Correlation between Ancestry and Country longitude
+
+```{r}
+library(tidyverse)
+Samples_data<-read_delim("metadata_final.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+
+indiv_order<-read_delim("./Data/list_samples_Africa.txt", 
+    delim = "\t", escape_double = FALSE, 
+    col_names = "sample_ID", trim_ws = TRUE)
+
+info<-inner_join(indiv_order,Samples_data, join_by(sample_ID == `Other name`))
+
+
+
+Qmat <- read_table("./Data/Africa.ancestry.admix.2.Q", 
+    col_names = c("Q1","Q2"))
+
+total_map<-cbind(info, Qmat)
+total_map.keep[,c(26:28)]<-total_map[,c(26:28)]*100
+
+## test normal distribution
+shapiro.test(total_map.keep$country_Long)
+shapiro.test(total_map.keep$Q1)
+shapiro.test(total_map.keep$Q2)
+# All are significant = distribution is not normal
+
+### Test correlation
+res <-cor.test(total_map.keep$country_Long, total_map.keep$Q1,  method = "spearman")
+res
+
+res2 <-cor.test(total_map.keep$country_Long, total_map.keep$Q2,  method = "spearman")
+res2
+
+## Plot
+library("ggpubr")
+ggscatter(total_map.keep, x = "country_Long", y = "Q1", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          xlab = "Country longitude", ylab = "Ancestry coefficient (Y)")
+
+ggscatter(total_map.keep, x = "country_Long", y = "Q2", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          xlab = "Country longitude", ylab = "Ancestry coefficient (R)")
+```
+
 # Genome-scans
 
 For the genome scans, I kept the African samples with more than 70% ancestry in one African cluster and Thai samples as outgroup population.
@@ -511,4 +559,139 @@ Do windows with significant selection signals fall into gene coding sequences (C
 bedtools intersect -wb -a GCF_900090045.1_PmUG01_genomic.gff \
 -b PBScY_genes_signiff.tsv PBScR_genes_signiff.tsv \
 -names PBScY PBScR > gene_ID.txt
+```
+
+## XP-EHH and Rsb
+
+Version: vcftools v0.1.16, R v4.5.2, bedtools v2.31.1.
+
+I show the Rsb, but it's the same for the XP-EHH: it just performs a different function at one point.
+
+### VCF input
+
+```{bash}
+ARR_CHR=(NC_041775.1 NC_041776.1 NC_041777.1 NC_041778.1 NC_041779.1 NC_041780.1 NC_041781.1 NC_041782.1 NC_041783.1 NC_041784.1 NC_041785.1 NC_041786.1 NC_041787.1 NC_041788.1)
+
+ARR_POP=(ClusterR ClusterY)
+
+for POP in ${ARR_POP[@]}
+do
+for CHR in ${ARR_CHR[@]}
+do
+vcftools --gzvcf clusters_samples.filtered.vcf.gz --min-alleles 2 --max-alleles 2 --remove-indels --chr ${CHR} --keep $POP.samples.txt --recode --stdout | bgzip -c > $POP.$CHR.vcf.gz
+done
+done
+```
+
+### Scan the haplotypes
+
+```{r}
+library(vcfR)
+library(rehh)
+library(tidyverse)
+
+CLUSTER<-c("ClusterR","ClusterY")
+chr<-c("NC_041775.1", "NC_041776.1", "NC_041777.1", "NC_041778.1", "NC_041779.1", "NC_041780.1", "NC_041781.1", "NC_041782.1", "NC_041783.1", "NC_041784.1", "NC_041785.1", "NC_041786.1", "NC_041787.1", "NC_041788.1")
+for (pop in CLUSTER){
+for (i in chr){
+  file <- paste0("./Data/",pop,".",i,".vcf.gz")
+  hh <- data2haplohh(hap_file = file, polarize_vcf = F, vcf_reader = "vcfR", allele_coding = "01", min_perc_geno.mrk=50) # read the data
+  scan <- scan_hh(hh, phased = T, polarized = F) # scan the chromosome
+  id <- paste0("scan_",i)
+  assign(id, scan)
+}
+scan_total <- rbind(scan_NC_041775.1, scan_NC_041776.1, scan_NC_041777.1, scan_NC_041778.1, scan_NC_041779.1, scan_NC_041780.1, scan_NC_041781.1, scan_NC_041782.1, scan_NC_041783.1, scan_NC_041784.1, scan_NC_041785.1, scan_NC_041786.1, scan_NC_041787.1, scan_NC_041788.1) # Gather all the chromosomes
+path<-paste0("./Data/scan_",pop,".txt")
+write_tsv(scan_total, path)
+}
+```
+
+### Rsb
+
+```{r}
+library(rehh)
+
+  scan_ClusterY <- read_delim("./Data/scan_ClusterY.txt", "\t", escape_double = FALSE, trim_ws = TRUE)
+  scan_ClusterR <- read_delim("./Data/scan_ClusterR.txt", "\t", escape_double = FALSE, trim_ws = TRUE)
+    
+    rsb.Africa <- ines2rsb(scan_pop1 =  scan_ClusterY, #change ines2rsb to ies2xpehh to get XP-EHH
+                                 scan_pop2 =  scan_ClusterR,
+                                 popname1 = "Cluster_Y",
+                                 popname2 = "Cluster_R")
+    
+    rsb.Africa<-na.omit(rsb.Africa)
+     
+### make an outlier column in the data.frame
+    for (i in 1:nrow(rsb.Africa)) {
+      if ((rsb.Africa$LOGPVALUE[i] > 4) && (rsb.Africa$RSB_Cluster_Y_Cluster_R[i]>0)) {rsb.Africa$STATUT[i] <- "outlier_Y"}
+      else if ((rsb.Africa$LOGPVALUE[i] > 4) && (rsb.Africa$RSB_Cluster_Y_Cluster_R[i]<0)) {rsb.Africa$STATUT[i] <- "outlier_R"}
+      else {rsb.Africa$STATUT[i] <- "background"}
+    }
+    
+    highlight_Y<-subset(rsb.Africa, STATUT=="outlier_Y")
+    write_tsv(as.data.frame(cbind(highlight_Y$CHR, highlight_Y$POSITION,(highlight_Y$POSITION+1))), "./Data/Rsb_ClusterY.txt")
+    highlight_R<-subset(rsb.Africa, STATUT=="outlier_R")
+    write_tsv(as.data.frame(cbind(highlight_R$CHR, highlight_R$POSITION,(highlight_R$POSITION+1))), "./Data/Rsb_ClusterR.txt")    
+    
+    rsb.Africa$CHR<-as.numeric(as.factor(rsb.Africa$CHR)) #Keep for bedtools
+    
+#### Plot
+    rsb.Africa$CHR<-as.numeric(as.factor(rsb.Africa$CHR))
+  data_cum <-  rsb.Africa %>% 
+    group_by(CHR) %>% 
+    summarise(max_bp = max(POSITION)) %>% 
+    mutate(bp_add = lag(cumsum(max_bp), default = 0)) %>% 
+    select(CHR, bp_add)
+   rsb.Africa <-  rsb.Africa %>% 
+    inner_join(data_cum, by = "CHR") %>% 
+    mutate(bp_cum = POSITION + bp_add)
+  
+  axis_set <-  rsb.Africa %>% 
+    group_by(CHR) %>% 
+    summarize(center = median(bp_cum))
+  
+  highlight_Y<-subset(rsb.Africa, STATUT=="outlier_Y")
+  highlight_R<-subset(rsb.Africa, STATUT=="outlier_R")
+  
+  p1<-ggplot(rsb.Africa, aes(x = bp_cum, y =LOGPVALUE,color = as_factor(CHR))) +
+    geom_point(alpha = 0.75) +
+    geom_hline(yintercept = 4, color = "grey40", linetype = "dashed") + 
+    scale_x_continuous(label = axis_set$CHR, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("lightskyblue", "lightsteelblue"), unique(length(axis_set$CHR))))+
+    labs(x = "Chromosomes", y = "-log(p-value)") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  title<-paste0("Rsb")
+  p2<-p1+geom_point(data=highlight_Y, aes(x = bp_cum, y =LOGPVALUE), color = "#FFBF00", alpha= 0.8)+
+    geom_point(data=highlight_R, aes(x = bp_cum, y =LOGPVALUE), color = "#C40018", alpha= 0.8)+ggtitle(title)
+p2
+
+p1<-ggplot(rsb.Africa, aes(x = bp_cum, y =RSB_Cluster_Y_Cluster_R,color = as_factor(CHR))) +
+    geom_point(alpha = 0.75) +
+    scale_x_continuous(label = axis_set$CHR, breaks = axis_set$center) +
+    scale_color_manual(values = rep(c("lightskyblue", "lightsteelblue"), unique(length(axis_set$CHR))))+
+    labs(x = "Chromosomes", y = "Rsb") + 
+    theme_minimal() +
+    theme( 
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.x = element_text())
+  title<-paste0("")
+  p4<-p1+geom_point(data=highlight_Y, aes(x = bp_cum, y =RSB_Cluster_Y_Cluster_R), color = "#FFBF00", alpha= 0.8)+
+    geom_point(data=highlight_R, aes(x = bp_cum, y =RSB_Cluster_Y_Cluster_R), color = "#C40018", alpha= 0.8)+ggtitle(title)
+p4
+```
+
+Do windows with significant selection signals fall into gene coding sequences (CDS)?
+```{bash}
+bedtools intersect -wb -a ../GCF_900090045.1_PmUG01_genomic.gff \
+-b Rsb_ClusterY.txt Rsb_ClusterR.txt xpehh_ClusterY.txt xpehh_ClusterR.txt \
+-names Rsb_ClusterY Rsb_ClusterR xpehh_ClusterY xpehh_ClusterR > gene_ID.ehh.txt
 ```
